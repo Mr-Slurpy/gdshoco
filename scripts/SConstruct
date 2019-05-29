@@ -1,0 +1,113 @@
+#!python
+import os, glob
+
+# Build defines
+target_name = "shoco"
+target_path = "../addons/" + target_name + "/bin/"
+build_path = "build/"
+source_path = "src/"
+
+# Local dependency paths, adapt them to your setup
+godot_headers_path = "godot-cpp/godot_headers/"
+cpp_bindings_path = "godot-cpp/"
+cpp_library = "libgodot-cpp"
+
+# Run godot-cpp
+SConscript(cpp_bindings_path + "SConstruct")
+
+# Define our options
+opts = Variables([], ARGUMENTS)
+opts.Add(EnumVariable('target', "Compilation target", 'debug', ['d', 'debug', 'r', 'release']))
+opts.Add(EnumVariable('platform', "Compilation platform", 'auto', ['auto', 'windows', 'x11', 'linux', 'osx']))
+opts.Add(BoolVariable('use_llvm', "Use the LLVM / Clang compiler", False))
+opts.Add(BoolVariable("vsproj", "Generates a Visual Studio Project/Solution", False))
+
+env = Environment(ENV = os.environ, variables = opts)
+
+# only support 64 at this time..
+bits = 64
+
+# Set intermediates folder
+if build_path != source_path:
+    env.VariantDir(build_path, source_path, duplicate = 0)
+
+# Process some arguments
+if env['use_llvm']:
+    env['CC'] = 'clang'
+    env['CXX'] = 'clang++'
+
+if env['platform'] == 'auto':
+	import sys
+	if sys.platform.startswith("linux"):
+		env["platform"] = "linux"
+	elif sys.platform == "darwin":
+		env["platform"] = "osx"
+	elif sys.platform == "win32":
+		env["platform"] = "windows"
+	else:
+		print("Could not detect platform automatically, please specify with platform=<platform>")
+		quit()
+
+# Check our platform specifics
+if env['platform'] == "osx":
+    target_path += 'osx/'
+    cpp_library += '.osx'
+    if env['target'] in ('debug', 'd'):
+        env.Append(CCFLAGS = ['-g','-O2', '-arch', 'x86_64'])
+        env.Append(LINKFLAGS = ['-arch', 'x86_64'])
+    else:
+        env.Append(CCFLAGS = ['-g','-O3', '-arch', 'x86_64'])
+        env.Append(LINKFLAGS = ['-arch', 'x86_64'])
+
+elif env['platform'] in ('x11', 'linux'):
+    target_path += 'x11/'
+    cpp_library += '.linux'
+    if env['target'] in ('debug', 'd'):
+        env.Append(CCFLAGS = ['-fPIC', '-g3','-Og', '-std=c++17'])
+    else:
+        env.Append(CCFLAGS = ['-fPIC', '-g','-O3', '-std=c++17'])
+
+elif env['platform'] == "windows":
+    target_path += 'win64/'
+    cpp_library += '.windows'
+
+    env.Append(CCFLAGS = ['-DWIN32', '-D_WIN32', '-D_WINDOWS', '-W3', '-GR', '-D_CRT_SECURE_NO_WARNINGS'])
+    if env['target'] in ('debug', 'd'):
+        env.Append(CCFLAGS = ['-EHsc', '-D_DEBUG', '-MDd', '-Z7'])
+        env.Append(LINKFLAGS = ['-DEBUG'])
+    else:
+        env.Append(CCFLAGS = ['-O2', '-EHsc', '-DNDEBUG', '-MD'])
+
+if env['target'] in ('debug', 'd'):
+    cpp_library += '.debug'
+else:
+    cpp_library += '.release'
+
+cpp_library += '.' + str(bits)
+
+# make sure our binding library is properly included
+env.Append(CPPPATH=['.', godot_headers_path, cpp_bindings_path + 'include/', cpp_bindings_path + 'include/core/', cpp_bindings_path + 'include/gen/'])
+env.Append(LIBPATH=[cpp_bindings_path + 'bin/'])
+env.Append(LIBS=[cpp_library])
+
+# tweak this if you want to use different folders, or more folders, to store your source code in.
+env.Append(CPPPATH=[source_path])
+sources = glob.glob(source_path + '**/*.cpp', recursive=True) + glob.glob(source_path + '**/*.c', recursive=True)
+build_sources = [build_path + source[len(source_path):] for source in sources]
+
+library = env.SharedLibrary(target=target_path + target_name, source=build_sources)
+Default(library)
+
+if env['platform'] == "windows" and env["vsproj"]:
+	includes = glob.glob(source_path + '**/*.h', recursive=True) + glob.glob(cpp_bindings_path + "include/core/*.hpp") + glob.glob(cpp_bindings_path + "include/gen/*.hpp")
+	msvs_project = env.MSVSProject(
+		target = target_name + env["MSVSPROJECTSUFFIX"],
+		srcs = sources, incs = includes,
+		variant = ["Release|x64", "Debug|x64"],
+		cmdargs = ["platform=windows target=release", "platform=windows target=debug"],
+		#buildtarget = [target_path + target_name + ".dll"] * 2,
+	)
+	Default(msvs_project)
+
+# Generates help for the -h scons option.
+Help(opts.GenerateHelpText(env))
